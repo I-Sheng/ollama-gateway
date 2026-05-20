@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OE Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body { background:#0f172a; color:#e2e8f0; font-family:system-ui,sans-serif; }
+    .card { background:#1e293b; border:1px solid #334155; border-radius:12px; padding:20px; }
+    .bar-track { background:#334155; border-radius:999px; height:8px; overflow:hidden; }
+    .bar-fill { height:8px; border-radius:999px; transition:width .6s ease; }
+    .stat-val { font-size:1.9rem; font-weight:700; line-height:1; letter-spacing:-.02em; }
+    .stat-lbl { font-size:.7rem; color:#64748b; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
+    input,select { outline:none; }
+    input:focus,select:focus { border-color:#6366f1 !important; }
+    ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:#1e293b; }
+    ::-webkit-scrollbar-thumb { background:#334155; border-radius:3px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Login ─────────────────────────────────────────── -->
+<div id="login" class="min-h-screen flex items-center justify-center px-4">
+  <div class="card w-full max-w-xs">
+    <div class="flex items-center gap-2 mb-6">
+      <div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-white text-xs font-bold">OE</div>
+      <span class="font-semibold text-white text-lg">Dashboard</span>
+    </div>
+    <form onsubmit="doLogin(event)">
+      <label class="stat-lbl block mb-1">Password</label>
+      <input id="pw" type="password"
+        class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm mb-3"
+        autofocus>
+      <p id="login-err" class="text-red-400 text-xs mb-3 hidden">Incorrect password.</p>
+      <button type="submit"
+        class="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 rounded-lg transition-colors">
+        Sign in
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ── App ───────────────────────────────────────────── -->
+<div id="app" class="hidden min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur px-5 py-3 flex items-center justify-between sticky top-0 z-10">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-white text-xs font-bold">OE</div>
+      <span class="font-semibold text-white">OE Dashboard</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span id="last-refresh" class="text-xs text-slate-500"></span>
+      <button onclick="doLogout()" class="text-xs text-slate-400 hover:text-white transition-colors">Logout</button>
+    </div>
+  </header>
+
+  <main class="flex-1 p-5 max-w-7xl mx-auto w-full space-y-5">
+
+    <!-- ── Hardware stats ───────────────────────────── -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+
+      <!-- GPU utilization -->
+      <div class="card">
+        <div class="stat-lbl">GPU Utilization</div>
+        <div class="stat-val text-blue-400" id="gpu-util">--</div>
+        <div class="bar-track mt-3"><div class="bar-fill bg-blue-500" id="gpu-util-bar" style="width:0"></div></div>
+      </div>
+
+      <!-- VRAM -->
+      <div class="card">
+        <div class="stat-lbl">VRAM</div>
+        <div class="stat-val text-violet-400" id="gpu-mem">--</div>
+        <div class="bar-track mt-3"><div class="bar-fill bg-violet-500" id="gpu-mem-bar" style="width:0"></div></div>
+        <div class="text-xs text-slate-500 mt-1" id="gpu-mem-detail"></div>
+      </div>
+
+      <!-- Temp + Power -->
+      <div class="card">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <div class="stat-lbl">Temp</div>
+            <div class="stat-val text-orange-400" id="gpu-temp">--</div>
+          </div>
+          <div>
+            <div class="stat-lbl">Power</div>
+            <div class="stat-val text-yellow-400" id="gpu-power">--</div>
+          </div>
+        </div>
+        <div class="text-xs text-slate-500 mt-3 truncate" id="gpu-name"></div>
+      </div>
+
+      <!-- System RAM -->
+      <div class="card">
+        <div class="stat-lbl">System RAM</div>
+        <div class="stat-val text-teal-400" id="ram-pct">--</div>
+        <div class="bar-track mt-3"><div class="bar-fill bg-teal-500" id="ram-bar" style="width:0"></div></div>
+        <div class="text-xs text-slate-500 mt-1" id="ram-detail"></div>
+      </div>
+    </div>
+
+    <!-- ── Token usage ───────────────────────────────── -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="card lg:col-span-2">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-semibold text-white text-sm">Token Usage — Last 7 Days</h2>
+          <button onclick="loadUsage()" class="text-xs text-indigo-400 hover:text-indigo-300">Refresh</button>
+        </div>
+        <canvas id="usage-chart"></canvas>
+      </div>
+      <div class="card">
+        <h2 class="font-semibold text-white text-sm mb-4">All-Time by Model</h2>
+        <div id="usage-totals" class="space-y-3 text-sm text-slate-500">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ── Model management ─────────────────────────── -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+      <!-- Installed models + pull -->
+      <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold text-white text-sm">Installed Models</h2>
+          <button onclick="loadModels()" class="text-xs text-indigo-400 hover:text-indigo-300">Refresh</button>
+        </div>
+        <div id="models-list" class="space-y-2 text-sm text-slate-500">Loading…</div>
+
+        <!-- Pull -->
+        <div class="pt-3 border-t border-slate-700">
+          <p class="text-xs font-medium text-slate-400 mb-2">Pull a model</p>
+          <div class="flex gap-2">
+            <input id="pull-input" type="text" placeholder="e.g. llama3.2:latest"
+              class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white">
+            <button onclick="doPull()"
+              class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium px-4 rounded-lg transition-colors whitespace-nowrap">
+              Pull
+            </button>
+          </div>
+          <p id="pull-msg" class="text-xs mt-2 hidden"></p>
+        </div>
+      </div>
+
+      <!-- Configure model -->
+      <div class="card">
+        <h2 class="font-semibold text-white text-sm mb-1">Configure Model Parameters</h2>
+        <p class="text-xs text-slate-500 mb-4">Creates a derived model with custom defaults via Modelfile.</p>
+        <div class="space-y-3">
+
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Base Model</label>
+            <select id="cfg-base" onchange="onBaseChange()"
+              class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white">
+            </select>
+          </div>
+
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Target Name</label>
+            <input id="cfg-target" type="text" placeholder="auto"
+              class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white">
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">Context Size</label>
+              <input id="cfg-ctx" type="number" placeholder="num_ctx"
+                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white">
+            </div>
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">GPU Layers</label>
+              <input id="cfg-gpu" type="number" placeholder="num_gpu"
+                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white">
+            </div>
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">Temperature</label>
+              <input id="cfg-temp" type="number" step="0.05" min="0" max="2" placeholder="0.7"
+                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white">
+            </div>
+          </div>
+
+          <button onclick="doConfigure()"
+            class="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 rounded-lg transition-colors">
+            Create Derived Model
+          </button>
+          <p id="cfg-msg" class="text-xs hidden"></p>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script>
+// ── helpers ────────────────────────────────────────────
+function fmt(bytes) {
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB';
+  return bytes + ' B';
+}
+function pct(used, total) { return Math.round(used / total * 100); }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  if (r.status === 401) { hideDashboard(); return null; }
+  return r.ok ? r.json() : null;
+}
+
+// ── auth ───────────────────────────────────────────────
+async function doLogin(e) {
+  e.preventDefault();
+  const pw = document.getElementById('pw').value;
+  const r = await fetch('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw }),
+  });
+  if (r.ok) {
+    document.getElementById('login-err').classList.add('hidden');
+    showDashboard();
+  } else {
+    document.getElementById('login-err').classList.remove('hidden');
+    document.getElementById('pw').value = '';
+    document.getElementById('pw').focus();
+  }
+}
+
+async function doLogout() {
+  await fetch('/auth/logout', { method: 'POST' });
+  hideDashboard();
+}
+
+function showDashboard() {
+  document.getElementById('login').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  initChart();
+  refresh();
+  setInterval(refreshHardware, 5000);
+}
+
+function hideDashboard() {
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('login').classList.remove('hidden');
+  document.getElementById('pw').value = '';
+}
+
+// ── hardware refresh ───────────────────────────────────
+async function refreshHardware() {
+  await Promise.all([loadGPU(), loadMemory()]);
+  document.getElementById('last-refresh').textContent =
+    'Updated ' + new Date().toLocaleTimeString();
+}
+
+async function loadGPU() {
+  const d = await api('/api/gpu');
+  if (!d || d.error || !d.gpus?.length) {
+    document.getElementById('gpu-name').textContent = d?.error ?? 'GPU unavailable';
+    return;
+  }
+  const g = d.gpus[0];
+  document.getElementById('gpu-util').textContent = g.utilization + '%';
+  document.getElementById('gpu-util-bar').style.width = g.utilization + '%';
+
+  const mp = pct(g.memory_used, g.memory_total);
+  document.getElementById('gpu-mem').textContent = mp + '%';
+  document.getElementById('gpu-mem-bar').style.width = mp + '%';
+  document.getElementById('gpu-mem-detail').textContent =
+    fmt(g.memory_used) + ' / ' + fmt(g.memory_total);
+
+  document.getElementById('gpu-temp').textContent = g.temperature + '°';
+  document.getElementById('gpu-power').textContent =
+    g.power_watts != null ? Math.round(g.power_watts) + 'W' : 'N/A';
+  document.getElementById('gpu-name').textContent = g.name;
+}
+
+async function loadMemory() {
+  const d = await api('/api/memory');
+  if (!d) return;
+  document.getElementById('ram-pct').textContent = Math.round(d.percent) + '%';
+  document.getElementById('ram-bar').style.width = d.percent + '%';
+  document.getElementById('ram-detail').textContent = fmt(d.used) + ' / ' + fmt(d.total);
+}
+
+// ── chart + usage ──────────────────────────────────────
+let chart = null;
+
+function initChart() {
+  const ctx = document.getElementById('usage-chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label: 'Prompt tokens',     data: [], backgroundColor: 'rgba(99,102,241,.75)' },
+      { label: 'Completion tokens', data: [], backgroundColor: 'rgba(34,211,238,.75)' },
+    ]},
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: '#94a3b8', boxWidth: 12 } } },
+      scales: {
+        x: { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#334155' } },
+      },
+    },
+  });
+}
+
+async function loadUsage() {
+  const d = await api('/api/usage');
+  if (!d) return;
+
+  // aggregate daily by date across models
+  const byDate = {};
+  for (const r of d.daily) {
+    if (!byDate[r.date]) byDate[r.date] = { p: 0, c: 0 };
+    byDate[r.date].p += r.prompt_tokens || 0;
+    byDate[r.date].c += r.completion_tokens || 0;
+  }
+  const dates = Object.keys(byDate).sort().slice(-7);
+  chart.data.labels = dates;
+  chart.data.datasets[0].data = dates.map(d => byDate[d].p);
+  chart.data.datasets[1].data = dates.map(d => byDate[d].c);
+  chart.update();
+
+  const el = document.getElementById('usage-totals');
+  if (!d.totals.length) { el.innerHTML = '<p>No data yet.</p>'; return; }
+  el.innerHTML = d.totals.map(t => `
+    <div class="bg-slate-700/40 rounded-lg p-3">
+      <div class="text-white text-xs font-medium truncate mb-1">${t.model}</div>
+      <div class="text-slate-400 text-xs">${t.requests} req &middot; ${(t.prompt_tokens + t.completion_tokens).toLocaleString()} tokens</div>
+      <div class="text-slate-500 text-xs mt-0.5">&#8593; ${(t.prompt_tokens||0).toLocaleString()} prompt &nbsp;&#8595; ${(t.completion_tokens||0).toLocaleString()} completion</div>
+    </div>
+  `).join('');
+}
+
+// ── models ─────────────────────────────────────────────
+let models = [];
+
+async function loadModels() {
+  const d = await api('/api/models');
+  if (!d) return;
+  models = d.models || [];
+
+  const el = document.getElementById('models-list');
+  if (!models.length) { el.innerHTML = '<p>No models installed.</p>'; return; }
+  el.innerHTML = models.map(m => {
+    const name = m.name || m.model;
+    return `
+      <div class="flex items-center justify-between bg-slate-700/40 rounded-lg px-3 py-2">
+        <div>
+          <div class="text-white text-sm font-medium">${name}</div>
+          ${m.size ? `<div class="text-slate-500 text-xs">${fmt(m.size)}</div>` : ''}
+        </div>
+        <button onclick="doDelete('${name}')"
+          class="text-xs text-red-400 hover:text-red-300 transition-colors">Delete</button>
+      </div>`;
+  }).join('');
+
+  const sel = document.getElementById('cfg-base');
+  const prev = sel.value;
+  sel.innerHTML = models.map(m => {
+    const name = m.name || m.model;
+    return `<option value="${name}"${name === prev ? ' selected' : ''}>${name}</option>`;
+  }).join('');
+  onBaseChange();
+}
+
+function onBaseChange() {
+  const base = document.getElementById('cfg-base').value;
+  const ti = document.getElementById('cfg-target');
+  if (!ti.value || ti.value.endsWith('-custom')) {
+    ti.placeholder = base ? base.split(':')[0] + '-custom' : 'auto';
+  }
+}
+
+async function doPull() {
+  const name = document.getElementById('pull-input').value.trim();
+  if (!name) return;
+  const msg = document.getElementById('pull-msg');
+  msg.className = 'text-xs mt-2 text-indigo-400';
+  msg.textContent = `Pulling ${name}…`;
+  msg.classList.remove('hidden');
+
+  const d = await api('/api/models/pull', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+  if (d?.ok) {
+    msg.className = 'text-xs mt-2 text-green-400';
+    msg.textContent = `${name} pulled successfully.`;
+    document.getElementById('pull-input').value = '';
+    loadModels();
+  } else {
+    msg.className = 'text-xs mt-2 text-red-400';
+    msg.textContent = 'Pull failed — check Ollama logs.';
+  }
+}
+
+async function doDelete(name) {
+  if (!confirm(`Delete "${name}"?`)) return;
+  await api(`/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  loadModels();
+}
+
+async function doConfigure() {
+  const base = document.getElementById('cfg-base').value;
+  if (!base) return;
+  const target = document.getElementById('cfg-target').value.trim();
+  const payload = {
+    model: base,
+    target_name: target || null,
+    num_ctx:     document.getElementById('cfg-ctx').value  || null,
+    num_gpu:     document.getElementById('cfg-gpu').value  || null,
+    temperature: document.getElementById('cfg-temp').value || null,
+  };
+  const msg = document.getElementById('cfg-msg');
+  msg.className = 'text-xs text-indigo-400';
+  msg.textContent = 'Creating derived model…';
+  msg.classList.remove('hidden');
+
+  const d = await api('/api/models/configure', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  if (d?.ok) {
+    msg.className = 'text-xs text-green-400';
+    msg.textContent = `Model "${d.name}" created.`;
+    loadModels();
+  } else {
+    msg.className = 'text-xs text-red-400';
+    msg.textContent = 'Failed — check Ollama logs.';
+  }
+}
+
+// ── boot ───────────────────────────────────────────────
+async function refresh() {
+  await Promise.all([refreshHardware(), loadUsage(), loadModels()]);
+}
+
+async function init() {
+  const d = await fetch('/auth/check').then(r => r.json()).catch(() => null);
+  if (d?.authenticated) {
+    showDashboard();
+  } else {
+    document.getElementById('login').classList.remove('hidden');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

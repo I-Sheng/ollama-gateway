@@ -12,15 +12,26 @@ until curl -sf http://localhost:11434/api/tags > /dev/null; do
 done
 echo "Ollama is up."
 
-# Pull the model if not already present
-MODEL="${OLLAMA_MODEL:-gemma4:31b-it-q4_K_M}"
-if ! ollama list | grep -q "$MODEL"; then
-  echo "Pulling $MODEL ..."
-  ollama pull "$MODEL"
-  echo "Model ready."
-else
-  echo "Model $MODEL already present."
+pull_model() {
+  local model="$1"
+  if ! ollama list | grep -q "$model"; then
+    echo "Pulling $model ..."
+    ollama pull "$model"
+    echo "$model ready."
+  else
+    echo "$model already present."
+  fi
+}
+
+if [ -z "$OLLAMA_MODEL" ]; then
+  echo "Error: OLLAMA_MODEL is not set" >&2; exit 1
 fi
+if [ -z "$AUTOCOMPLETE_MODEL" ]; then
+  echo "Error: AUTOCOMPLETE_MODEL is not set" >&2; exit 1
+fi
+
+pull_model "$OLLAMA_MODEL"
+pull_model "$AUTOCOMPLETE_MODEL"
 
 # Hand off to the Ollama server process
 wait $OLLAMA_PID

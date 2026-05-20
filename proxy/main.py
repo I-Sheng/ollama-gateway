@@ -1,13 +1,19 @@
+import json
 import os
+import time
 import uuid
 import sqlite3
 import httpx
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 ADMIN_KEY = os.getenv("ADMIN_KEY", "")
 DB_PATH = os.getenv("DB_PATH", "/data/keys.db")
+AUTOCOMPLETE_MODEL = os.getenv("AUTOCOMPLETE_MODEL")
+if not AUTOCOMPLETE_MODEL:
+    raise RuntimeError("AUTOCOMPLETE_MODEL environment variable is not set")
 
 app = FastAPI(title="Ollama Access Proxy")
 
@@ -22,6 +28,7 @@ def get_db():
 @app.on_event("startup")
 def startup():
     conn = get_db()
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS api_keys (
             key       TEXT PRIMARY KEY,
@@ -30,8 +37,30 @@ def startup():
             active    INTEGER NOT NULL DEFAULT 1
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS token_usage (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            model             TEXT NOT NULL,
+            prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
+
+
+def _record_usage(model: str, prompt_tokens: int, completion_tokens: int) -> None:
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO token_usage (model, prompt_tokens, completion_tokens) VALUES (?, ?, ?)",
+            (model, prompt_tokens, completion_tokens),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 # --- dependency helpers ---
@@ -85,9 +114,92 @@ def revoke_key(key: str):
     return {"revoked": key}
 
 
+# --- autocomplete ---
+
+class CompletionRequest(BaseModel):
+    prompt: str
+    suffix: str | None = None
+    max_tokens: int = 128
+    temperature: float = 0.2
+    stream: bool = False
+    stop: list[str] | str | None = None
+
+
+@app.post("/v1/completions", dependencies=[Depends(require_api_key)])
+async def completions(req: CompletionRequest):
+    stop = [req.stop] if isinstance(req.stop, str) else (req.stop or [])
+    ollama_body = {
+        "model": AUTOCOMPLETE_MODEL,
+        "prompt": req.prompt,
+        "stream": req.stream,
+        "options": {
+            "num_predict": req.max_tokens,
+            "temperature": req.temperature,
+            **({"stop": stop} if stop else {}),
+        },
+        **({"suffix": req.suffix} if req.suffix is not None else {}),
+    }
+
+    completion_id = f"cmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+    client = httpx.AsyncClient(timeout=None)
+
+    if req.stream:
+        upstream = await client.send(
+            client.build_request("POST", f"{OLLAMA_URL}/api/generate", json=ollama_body),
+            stream=True,
+        )
+
+        async def stream_sse():
+            try:
+                async for line in upstream.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    text = chunk.get("response", "")
+                    done = chunk.get("done", False)
+                    payload = {
+                        "id": completion_id,
+                        "object": "text_completion",
+                        "created": created,
+                        "model": AUTOCOMPLETE_MODEL,
+                        "choices": [{"text": text, "index": 0, "finish_reason": "stop" if done else None}],
+                    }
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    if done:
+                        _record_usage(
+                            AUTOCOMPLETE_MODEL,
+                            chunk.get("prompt_eval_count", 0),
+                            chunk.get("eval_count", 0),
+                        )
+                        yield "data: [DONE]\n\n"
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(stream_sse(), media_type="text/event-stream")
+
+    resp = await client.post(f"{OLLAMA_URL}/api/generate", json=ollama_body)
+    await client.aclose()
+    data = resp.json()
+    _record_usage(
+        AUTOCOMPLETE_MODEL,
+        data.get("prompt_eval_count", 0),
+        data.get("eval_count", 0),
+    )
+    return {
+        "id": completion_id,
+        "object": "text_completion",
+        "created": created,
+        "model": AUTOCOMPLETE_MODEL,
+        "choices": [{"text": data.get("response", ""), "index": 0, "finish_reason": "stop"}],
+    }
+
+
 # --- proxy ---
 
 SKIP_HEADERS = {"host", "authorization", "transfer-encoding"}
+TRACKED_PATHS = {"api/generate", "api/chat"}
 
 
 @app.api_route(
@@ -97,6 +209,13 @@ SKIP_HEADERS = {"host", "authorization", "transfer-encoding"}
 async def proxy(path: str, request: Request, _: str = Depends(require_api_key)):
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in SKIP_HEADERS}
+
+    tracked_model: str | None = None
+    if path in TRACKED_PATHS:
+        try:
+            tracked_model = json.loads(body).get("model")
+        except Exception:
+            pass
 
     client = httpx.AsyncClient(timeout=None)
     upstream = await client.send(
@@ -116,10 +235,29 @@ async def proxy(path: str, request: Request, _: str = Depends(require_api_key)):
     }
 
     async def stream():
+        last_chunk = b""
         try:
             async for chunk in upstream.aiter_bytes():
                 yield chunk
+                if chunk.strip():
+                    last_chunk = chunk
         finally:
+            if tracked_model and last_chunk:
+                for line in reversed(last_chunk.strip().split(b"\n")):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if obj.get("done"):
+                            _record_usage(
+                                tracked_model,
+                                obj.get("prompt_eval_count", 0),
+                                obj.get("eval_count", 0),
+                            )
+                        break
+                    except Exception:
+                        continue
             await upstream.aclose()
             await client.aclose()
 

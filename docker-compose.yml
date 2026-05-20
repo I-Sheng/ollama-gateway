@@ -3,6 +3,9 @@ services:
     build: ./ollama
     volumes:
       - ollama:/root/.ollama
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      AUTOCOMPLETE_MODEL: ${AUTOCOMPLETE_MODEL}
     # No port mapping — only reachable within this compose network
     deploy:
       resources:
@@ -21,10 +24,33 @@ services:
       OLLAMA_URL: http://ollama:11434
       ADMIN_KEY: ${ADMIN_KEY}
       DB_PATH: /data/keys.db
+      AUTOCOMPLETE_MODEL: ${AUTOCOMPLETE_MODEL}
     volumes:
       - proxy_data:/data
     depends_on:
       - ollama
+    restart: unless-stopped
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "21435:8000"
+    environment:
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+      OLLAMA_URL: http://ollama:11434
+      DB_PATH: /data/keys.db
+    volumes:
+      - proxy_data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      - ollama
+      - proxy
     restart: unless-stopped
 
 volumes:
