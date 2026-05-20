@@ -1,0 +1,32 @@
+services:
+  ollama:
+    build: ./ollama
+    volumes:
+      - ollama:/root/.ollama
+    # No port mapping — only reachable within this compose network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  proxy:
+    build: ./proxy
+    ports:
+      - "21434:8000"
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      ADMIN_KEY: ${ADMIN_KEY}
+      DB_PATH: /data/keys.db
+    volumes:
+      - proxy_data:/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  proxy_data:
