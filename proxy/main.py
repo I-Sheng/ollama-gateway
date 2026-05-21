@@ -248,15 +248,19 @@ async def proxy(path: str, request: Request, _: str = Depends(require_api_key)):
     }
 
     async def stream():
-        last_chunk = b""
+        buf = b""
+        prompt_tokens = 0
+        completion_tokens = 0
+        tps_value = None
+        found_done = False
         try:
-            async for chunk in upstream.aiter_bytes():
-                yield chunk
-                if chunk.strip():
-                    last_chunk = chunk
-        finally:
-            if tracked_model and last_chunk:
-                for line in reversed(last_chunk.strip().split(b"\n")):
+            async for raw in upstream.aiter_bytes():
+                yield raw
+                if not tracked_model:
+                    continue
+                buf += raw
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
                     line = line.strip()
                     if not line:
                         continue
@@ -265,16 +269,28 @@ async def proxy(path: str, request: Request, _: str = Depends(require_api_key)):
                         if obj.get("done"):
                             eval_count = obj.get("eval_count", 0)
                             eval_duration = obj.get("eval_duration", 0)
-                            tps = (eval_count / (eval_duration / 1e9)) if eval_duration and eval_count else None
-                            _record_usage(
-                                tracked_model,
-                                obj.get("prompt_eval_count", 0),
-                                eval_count,
-                                tps,
-                            )
-                        break
+                            tps_value = (eval_count / (eval_duration / 1e9)) if eval_duration and eval_count else None
+                            prompt_tokens = obj.get("prompt_eval_count", 0)
+                            completion_tokens = eval_count
+                            found_done = True
                     except Exception:
                         continue
+            # handle non-streaming response (single JSON body, no trailing newline)
+            if tracked_model and not found_done and buf.strip():
+                try:
+                    obj = json.loads(buf.strip())
+                    if "eval_count" in obj:
+                        eval_count = obj.get("eval_count", 0)
+                        eval_duration = obj.get("eval_duration", 0)
+                        tps_value = (eval_count / (eval_duration / 1e9)) if eval_duration and eval_count else None
+                        prompt_tokens = obj.get("prompt_eval_count", 0)
+                        completion_tokens = eval_count
+                        found_done = True
+                except Exception:
+                    pass
+        finally:
+            if tracked_model and found_done:
+                _record_usage(tracked_model, prompt_tokens, completion_tokens, tps_value)
             await upstream.aclose()
             await client.aclose()
 
