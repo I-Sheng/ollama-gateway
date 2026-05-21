@@ -1,28 +1,38 @@
-# Ollama Access Control Proxy
+# Ollama Gateway
 
-A reverse proxy that adds API key authentication in front of a self-hosted Ollama instance. Ollama is never exposed directly — all traffic goes through the proxy.
+A self-hosted LLM stack with API key authentication, autocomplete support, and an operational dashboard. Built and tested on an **NVIDIA RTX 4090 (24 GB)**.
 
 ```
-Client → proxy:21434 (API key check) → ollama:11434
+Client ──► proxy:21434  (API key auth) ──► ollama:11434
+Browser ──► dashboard:21435  (password auth) ──► ollama:11434
+                                             └──► proxy_data (SQLite)
 ```
-
-Built and tested on an **NVIDIA RTX 4090 (24 GB)**.
 
 ## Requirements
 
 - Docker + Docker Compose
-- NVIDIA GPU with the NVIDIA Container Toolkit installed
+- NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed
+
+---
+
+## Services
+
+| Service | Port | Description |
+|---|---|---|
+| `ollama` | — (internal) | Ollama inference server |
+| `proxy` | `21434` | API key–authenticated reverse proxy |
+| `dashboard` | `21435` | Password-protected OE dashboard |
 
 ---
 
 ## Models
 
-| Role | Default model | Env var |
+| Role | Env var | Configured in `.env` |
 |---|---|---|
-| Main (chat / generation) | `gemma4:31b-it-q4_K_M` | `OLLAMA_MODEL` |
-| Autocomplete | `qwen2.5-coder:1.5b` | `AUTOCOMPLETE_MODEL` |
+| Main (chat / generation) | `OLLAMA_MODEL` | `gemma4:31b-it-q4_K_M` |
+| Autocomplete | `AUTOCOMPLETE_MODEL` | `qwen2.5-coder:1.5b` |
 
-Both models are pulled automatically on first start. Subsequent restarts skip the download if the model weights are already present in the volume.
+Both models are pulled automatically on first start. Both `OLLAMA_MODEL` and `AUTOCOMPLETE_MODEL` are **required** — the stack will not start without them.
 
 ---
 
@@ -34,42 +44,42 @@ Both models are pulled automatically on first start. Subsequent restarts skip th
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` — all four variables are required:
 
 ```env
-ADMIN_KEY=change-me-to-a-strong-secret        # proxy API key management
+ADMIN_KEY=change-me-to-a-strong-secret          # proxy API key management
 DASHBOARD_PASSWORD=change-me-to-a-strong-secret  # OE dashboard login
-OLLAMA_MODEL=gemma4:31b-it-q4_K_M             # main chat model
-AUTOCOMPLETE_MODEL=qwen2.5-coder:1.5b         # autocomplete model
+OLLAMA_MODEL=gemma4:31b-it-q4_K_M               # main chat/generation model
+AUTOCOMPLETE_MODEL=qwen2.5-coder:1.5b           # autocomplete model
 ```
 
-### 2. Change models
-
-Set `OLLAMA_MODEL` or `AUTOCOMPLETE_MODEL` in your `.env` to any model on [ollama.com/library](https://ollama.com/library). Both variables are optional — the defaults above are used if omitted.
-
-To switch models, update `.env` and restart:
-
-```bash
-docker compose restart ollama
-```
-
-### 3. Start the stack
+### 2. Start the stack
 
 ```bash
 docker compose up -d --build
 ```
 
-The first start will take a while — it needs to pull both model weights. Check progress with:
+The first start pulls both model weights, which may take a while. Monitor progress with:
 
 ```bash
 docker compose logs -f ollama
 ```
 
+### 3. Switch models
+
+Update `OLLAMA_MODEL` or `AUTOCOMPLETE_MODEL` in `.env`, then restart the Ollama service:
+
+```bash
+docker compose restart ollama
+```
+
+Model weights are cached in the `ollama` Docker volume, so only new models are downloaded.
+
 ---
 
 ## Managing API Keys
 
-All key management requires your `ADMIN_KEY` from `.env`.
+All key management requires the `ADMIN_KEY` from `.env`.
 
 ### Create a key
 
@@ -102,7 +112,7 @@ curl -X DELETE "http://localhost:21434/admin/keys/ollama-a3f9c2d1..." \
 
 ## Using the API
 
-Pass your API key as a Bearer token on every request.
+Pass your API key as a `Bearer` token on every request. The proxy forwards all standard Ollama routes.
 
 ### List available models
 
@@ -133,9 +143,9 @@ curl http://localhost:21434/api/chat \
   }'
 ```
 
-### Autocomplete (OpenAI-compatible)
+### Autocomplete — `POST /v1/completions`
 
-`POST /v1/completions` always routes to `AUTOCOMPLETE_MODEL`. Supports fill-in-the-middle (FIM) via the `suffix` field.
+Routes automatically to `AUTOCOMPLETE_MODEL`. Supports fill-in-the-middle (FIM) via the `suffix` field.
 
 ```bash
 curl http://localhost:21434/v1/completions \
@@ -178,50 +188,60 @@ Response:
 
 ---
 
----
-
 ## OE Dashboard
 
-A password-protected operational dashboard served at `http://your-host:21435`.
+A password-protected operational dashboard at `http://your-host:21435`.
+
+### Login
+
+Enter the `DASHBOARD_PASSWORD` from your `.env`.
 
 ### Features
 
 | Section | Details |
 |---|---|
-| GPU utilization | Real-time utilization %, VRAM used/total, temperature, power draw |
+| GPU utilization | Real-time utilization %, VRAM used/total, temperature, power draw — auto-refreshes every 5 s |
 | System RAM | Used / total with percentage bar |
-| Token usage | Per-model prompt + completion token counts, last-7-days bar chart |
-| Model list | All installed models with size, delete button |
-| Pull model | Download any model from ollama.com/library |
-| Configure model | Create a derived model with custom `num_ctx`, `num_gpu`, `temperature` via Modelfile |
+| Token usage | Per-model prompt + completion token counts with a last-7-days bar chart |
+| Model list | All installed models with file size and a delete button |
+| Pull model | Download any model from [ollama.com/library](https://ollama.com/library) |
+| Configure model | Derive a new model with custom `num_ctx`, `num_gpu`, and `temperature` via Modelfile |
 
-Stats auto-refresh every 5 seconds. Token usage is tracked automatically for all `/api/generate`, `/api/chat`, and `/v1/completions` requests through the proxy.
-
-### Login
-
-Open `http://your-host:21435` in a browser and enter the `DASHBOARD_PASSWORD` from your `.env`.
+Token usage is recorded automatically for every `/api/generate`, `/api/chat`, and `/v1/completions` request that passes through the proxy.
 
 ---
 
 ## Project Structure
 
 ```
-ollama/
-├── .env.example            # environment variable template
+.
+├── .env.example
 ├── docker-compose.yml
 ├── ollama/
-│   ├── Dockerfile          # extends ollama/ollama, auto-pulls models on boot
-│   └── entrypoint.sh       # pulls OLLAMA_MODEL + AUTOCOMPLETE_MODEL
+│   ├── Dockerfile          # extends ollama/ollama, installs curl
+│   └── entrypoint.sh       # pulls OLLAMA_MODEL + AUTOCOMPLETE_MODEL on boot
 ├── proxy/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── main.py             # FastAPI proxy: API key auth, /v1/completions, token tracking
+│   └── main.py             # API key auth, /v1/completions, token usage tracking
 └── dashboard/
     ├── Dockerfile
     ├── requirements.txt
-    ├── main.py             # FastAPI: GPU/RAM stats, usage API, model management, session auth
+    ├── main.py             # GPU/RAM stats (pynvml/psutil), usage queries, model management
     └── index.html          # single-page dashboard UI
 ```
+
+---
+
+## Integrations
+
+See **[INTEGRATIONS.md](./INTEGRATIONS.md)** for step-by-step guides on connecting external tools to the gateway:
+
+- [Pi coding agent (pi.dev)](./INTEGRATIONS.md#pi-coding-agent--pidev) — terminal AI coding agent
+- [VS Code — Continue.dev](./INTEGRATIONS.md#vs-code--continuedev) — inline chat + tab autocomplete
+- [Python — OpenAI SDK](./INTEGRATIONS.md#python--openai-sdk)
+- [Python — LangChain](./INTEGRATIONS.md#python--langchain)
+- [Python — LlamaIndex](./INTEGRATIONS.md#python--llamaindex)
 
 ---
 
@@ -231,7 +251,7 @@ ollama/
 docker compose down
 ```
 
-Model weights are stored in the `ollama` Docker volume and survive restarts. To wipe everything including the model weights:
+To wipe everything including model weights and the key database:
 
 ```bash
 docker compose down -v
