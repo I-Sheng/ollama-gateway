@@ -43,19 +43,24 @@ def startup():
             model             TEXT NOT NULL,
             prompt_tokens     INTEGER NOT NULL DEFAULT 0,
             completion_tokens INTEGER NOT NULL DEFAULT 0,
+            tokens_per_sec    REAL,
             created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    try:
+        conn.execute("ALTER TABLE token_usage ADD COLUMN tokens_per_sec REAL")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
 
-def _record_usage(model: str, prompt_tokens: int, completion_tokens: int) -> None:
+def _record_usage(model: str, prompt_tokens: int, completion_tokens: int, tokens_per_sec: float | None = None) -> None:
     try:
         conn = get_db()
         conn.execute(
-            "INSERT INTO token_usage (model, prompt_tokens, completion_tokens) VALUES (?, ?, ?)",
-            (model, prompt_tokens, completion_tokens),
+            "INSERT INTO token_usage (model, prompt_tokens, completion_tokens, tokens_per_sec) VALUES (?, ?, ?, ?)",
+            (model, prompt_tokens, completion_tokens, tokens_per_sec),
         )
         conn.commit()
         conn.close()
@@ -167,10 +172,14 @@ async def completions(req: CompletionRequest):
                     }
                     yield f"data: {json.dumps(payload)}\n\n"
                     if done:
+                        eval_count = chunk.get("eval_count", 0)
+                        eval_duration = chunk.get("eval_duration", 0)
+                        tps = (eval_count / (eval_duration / 1e9)) if eval_duration and eval_count else None
                         _record_usage(
                             AUTOCOMPLETE_MODEL,
                             chunk.get("prompt_eval_count", 0),
-                            chunk.get("eval_count", 0),
+                            eval_count,
+                            tps,
                         )
                         yield "data: [DONE]\n\n"
             finally:
@@ -182,10 +191,14 @@ async def completions(req: CompletionRequest):
     resp = await client.post(f"{OLLAMA_URL}/api/generate", json=ollama_body)
     await client.aclose()
     data = resp.json()
+    eval_count = data.get("eval_count", 0)
+    eval_duration = data.get("eval_duration", 0)
+    tps = (eval_count / (eval_duration / 1e9)) if eval_duration and eval_count else None
     _record_usage(
         AUTOCOMPLETE_MODEL,
         data.get("prompt_eval_count", 0),
-        data.get("eval_count", 0),
+        eval_count,
+        tps,
     )
     return {
         "id": completion_id,
@@ -250,10 +263,14 @@ async def proxy(path: str, request: Request, _: str = Depends(require_api_key)):
                     try:
                         obj = json.loads(line)
                         if obj.get("done"):
+                            eval_count = obj.get("eval_count", 0)
+                            eval_duration = obj.get("eval_duration", 0)
+                            tps = (eval_count / (eval_duration / 1e9)) if eval_duration and eval_count else None
                             _record_usage(
                                 tracked_model,
                                 obj.get("prompt_eval_count", 0),
-                                obj.get("eval_count", 0),
+                                eval_count,
+                                tps,
                             )
                         break
                     except Exception:

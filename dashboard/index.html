@@ -101,6 +101,15 @@
       </div>
     </div>
 
+    <!-- ── Running models ─────────────────────────────── -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-white text-sm">Running Models</h2>
+        <button onclick="loadRunning()" class="text-xs text-indigo-400 hover:text-indigo-300">Refresh</button>
+      </div>
+      <div id="running-list" class="text-sm text-slate-500">Loading…</div>
+    </div>
+
     <!-- ── Token usage ───────────────────────────────── -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <div class="card lg:col-span-2">
@@ -239,6 +248,7 @@ function showDashboard() {
   initChart();
   refresh();
   setInterval(refreshHardware, 5000);
+  setInterval(loadRunning, 10000);
 }
 
 function hideDashboard() {
@@ -332,6 +342,53 @@ async function loadUsage() {
       <div class="text-slate-500 text-xs mt-0.5">&#8593; ${(t.prompt_tokens||0).toLocaleString()} prompt &nbsp;&#8595; ${(t.completion_tokens||0).toLocaleString()} completion</div>
     </div>
   `).join('');
+}
+
+// ── running models + settings ──────────────────────────
+async function loadRunning() {
+  const el = document.getElementById('running-list');
+  const [ps, speedData] = await Promise.all([
+    api('/api/models/running'),
+    api('/api/speed'),
+  ]);
+
+  const running = ps?.models ?? [];
+  if (!running.length) {
+    el.innerHTML = '<p class="text-slate-500 text-sm">No models currently loaded.</p>';
+    return;
+  }
+
+  // build per-model speed map (most recent entry wins)
+  const speedMap = {};
+  for (const r of (speedData?.recent ?? [])) {
+    if (!(r.model in speedMap)) speedMap[r.model] = r.tokens_per_sec;
+  }
+
+  const infos = await Promise.all(
+    running.map(m => api(`/api/models/show/${encodeURIComponent(m.name || m.model)}`))
+  );
+
+  el.innerHTML = running.map((m, i) => {
+    const name = m.name || m.model;
+    const info = infos[i] || {};
+    const tps = speedMap[name];
+    const ctx = info.num_ctx ?? '—';
+    const gpu = info.num_gpu ?? '—';
+    const temp = info.temperature ?? '—';
+    const speedBadge = tps != null
+      ? `<span class="ml-auto text-green-400 font-semibold text-sm">${tps.toFixed(1)} tok/s</span>`
+      : `<span class="ml-auto text-slate-500 text-xs">speed: no data yet</span>`;
+    return `
+      <div class="bg-slate-700/40 rounded-lg px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+        <div class="font-medium text-white text-sm">${name}</div>
+        <div class="flex gap-4 text-xs text-slate-400">
+          <span>Context&nbsp;<span class="text-slate-200 font-medium">${ctx}</span></span>
+          <span>GPU&nbsp;Layers&nbsp;<span class="text-slate-200 font-medium">${gpu}</span></span>
+          <span>Temp&nbsp;<span class="text-slate-200 font-medium">${temp}</span></span>
+        </div>
+        ${speedBadge}
+      </div>`;
+  }).join('');
 }
 
 // ── models ─────────────────────────────────────────────
@@ -435,7 +492,7 @@ async function doConfigure() {
 
 // ── boot ───────────────────────────────────────────────
 async function refresh() {
-  await Promise.all([refreshHardware(), loadUsage(), loadModels()]);
+  await Promise.all([refreshHardware(), loadUsage(), loadModels(), loadRunning()]);
 }
 
 async function init() {

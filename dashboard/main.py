@@ -43,9 +43,14 @@ def ensure_tables():
                 model             TEXT NOT NULL,
                 prompt_tokens     INTEGER NOT NULL DEFAULT 0,
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
+                tokens_per_sec    REAL,
                 created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        try:
+            conn.execute("ALTER TABLE token_usage ADD COLUMN tokens_per_sec REAL")
+        except Exception:
+            pass
         conn.commit()
         conn.close()
     except Exception:
@@ -192,6 +197,44 @@ async def delete_model(name: str):
     async with httpx.AsyncClient(timeout=30) as client:
         await client.request("DELETE", f"{OLLAMA_URL}/api/delete", json={"name": name})
     return {"ok": True}
+
+
+@app.get("/api/models/show/{name:path}", dependencies=[Depends(check_session)])
+async def show_model(name: str):
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(f"{OLLAMA_URL}/api/show", json={"name": name})
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail="Ollama show failed")
+        data = resp.json()
+    params: dict[str, str] = {}
+    for line in data.get("parameters", "").splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            params[parts[0]] = parts[1]
+    return {
+        "name": name,
+        "num_ctx": params.get("num_ctx"),
+        "num_gpu": params.get("num_gpu"),
+        "temperature": params.get("temperature"),
+        "details": data.get("details", {}),
+    }
+
+
+@app.get("/api/speed", dependencies=[Depends(check_session)])
+def speed_stats():
+    try:
+        conn = get_db()
+        rows = conn.execute("""
+            SELECT model, tokens_per_sec, created_at
+            FROM token_usage
+            WHERE tokens_per_sec IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 50
+        """).fetchall()
+        conn.close()
+        return {"recent": [dict(r) for r in rows]}
+    except Exception as e:
+        return {"recent": [], "error": str(e)}
 
 
 @app.post("/api/models/configure", dependencies=[Depends(check_session)])
